@@ -26,7 +26,7 @@ const scheduleSynthPlayback = (
     gainNode.connect(destination);
     gainNode.gain.setValueAtTime(0, when);
     gainNode.gain.linearRampToValueAtTime(note.velocity, when + params.envelope.attack);
-    gainNode.gain.exponentialRampToValueAtTime(params.envelope.sustain * note.velocity, when + params.envelope.attack + params.envelope.decay);
+    gainNode.gain.exponentialRampToValueAtTime(Math.max(0.0001, params.envelope.sustain * note.velocity), when + params.envelope.attack + params.envelope.decay);
     
     const releaseStart = when + durationSec - params.envelope.release;
     gainNode.gain.setValueAtTime(params.envelope.sustain * note.velocity, Math.max(when, releaseStart));

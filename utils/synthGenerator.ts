@@ -30,7 +30,7 @@ export const renderSynthFromParams = async (
 
     // Apply ADSR
     gainNode.gain.linearRampToValueAtTime(1.0, now + params.envelope.attack);
-    gainNode.gain.exponentialRampToValueAtTime(params.envelope.sustain, now + params.envelope.attack + params.envelope.decay);
+    gainNode.gain.exponentialRampToValueAtTime(Math.max(0.0001, params.envelope.sustain), now + params.envelope.attack + params.envelope.decay);
 
     // This is a simplified release. A note-off event would trigger the proper release.
     // For rendering a single sample, we'll hold sustain briefly then release.

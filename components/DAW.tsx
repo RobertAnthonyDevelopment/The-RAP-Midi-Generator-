@@ -614,21 +614,40 @@ export const DAW: React.FC<DAWProps> = ({ initialProject, onProjectChange, onLoa
                 }
             
                 let movedClip: DAWClip;
-                // FIX: Create a new clip object based on its type to maintain type safety.
+                // FIX: Create a new clip object based on its type to maintain type safety and avoid spreading a discriminated union.
                 if (clip.type === 'midi') {
-                    movedClip = { ...clip, startTick: newStartTick };
-                } else {
-                    movedClip = { ...clip, startTick: newStartTick };
+                    movedClip = {
+                        id: clip.id,
+                        type: 'midi',
+                        name: clip.name,
+                        notes: clip.notes,
+                        startTick: newStartTick,
+                        durationTicks: clip.durationTicks,
+                        pattern: clip.pattern,
+                        velocity: clip.velocity
+                    };
+                } else { // clip.type === 'audio'
+                    movedClip = {
+                        id: clip.id,
+                        type: 'audio',
+                        name: clip.name,
+                        audioBuffer: clip.audioBuffer,
+                        startTick: newStartTick,
+                        durationTicks: clip.durationTicks,
+                        audioStartTime: clip.audioStartTime
+                    };
                 }
             
                 const newTracks = p.tracks.map(t => {
                     if (t.id === targetTrack.id) {
+                        // If we're moving within the same track, update the clip. Otherwise, add it.
                         const clips = t.id === originalTrackId
                             ? t.clips.map(c => (c.id === clip.id ? movedClip : c))
                             : [...t.clips, movedClip];
                         return { ...t, clips };
                     }
-                    if (t.id === originalTrackId) {
+                    // If this is the original track and we moved the clip FROM here, remove it.
+                    if (t.id === originalTrackId && t.id !== targetTrack.id) {
                         return { ...t, clips: t.clips.filter(c => c.id !== clip.id) };
                     }
                     return t;

@@ -57,7 +57,8 @@ const scheduleSynthPlayback = (
     osc2.stop(when + durationSec);
 
     return {
-        stop: (stopTime: number = 0) => {
+        // FIX: Update function signature to match the Stoppable interface for better type consistency.
+        stop: (when?: number) => {
             const now = context.currentTime;
             const releaseTime = params.envelope.release;
             gainNode.gain.cancelScheduledValues(now);

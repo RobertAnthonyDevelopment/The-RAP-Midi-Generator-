@@ -85,7 +85,7 @@ export const TimelineRuler: React.FC<TimelineRulerProps> = React.memo(({ duratio
     const loopWidth = (loopRegion.endTick - loopRegion.startTick) * pixelsPerTick;
 
     return (
-        <div className="h-8 bg-gray-800 sticky top-0 z-20 overflow-hidden border-b border-black">
+        <div className="h-8 bg-gray-800 overflow-hidden border-b border-black">
             <div
                 className="relative h-full"
                 style={{

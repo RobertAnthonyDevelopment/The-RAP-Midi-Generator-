@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { ChordSelector } from './ChordSelector';
 import { ProgressionSuggester } from './ProgressionSuggester';
 import { Chord, MelodyNote, Note, ChordType } from '../types';
@@ -7,6 +7,7 @@ import { getMidiNotesForChord } from '../utils/chordUtils';
 import { generateMultiTrackMidi } from '../utils/midiGenerator';
 import { TICKS_PER_QUARTER_NOTE } from '../constants';
 import { Spinner } from './Spinner';
+import { Play, Stop } from './Icons';
 
 export const MidiChordGenerator: React.FC = () => {
     const [chords, setChords] = useState<Chord[]>([]);
@@ -19,6 +20,13 @@ export const MidiChordGenerator: React.FC = () => {
     const [octave, setOctave] = useState(3);
     
     const [isGenerating, setIsGenerating] = useState(false);
+
+    // New state for playback
+    const [isPlaying, setIsPlaying] = useState(false);
+    const [currentChordIndex, setCurrentChordIndex] = useState<number | null>(null);
+    const audioContextRef = useRef<AudioContext | null>(null);
+    const activeSourcesRef = useRef<AudioNode[]>([]);
+    const playbackTimerRef = useRef<number | null>(null);
 
     const handleAddChord = () => {
         setChords(prev => [...prev, { rootNote, chordType, octave }]);
@@ -34,7 +42,108 @@ export const MidiChordGenerator: React.FC = () => {
         }).filter((c): c is Chord => c !== null);
         setChords(newChords);
     };
+
+    const removeChord = (indexToRemove: number) => {
+        setChords(prev => prev.filter((_, index) => index !== indexToRemove));
+    };
+
+    const stopAllNotes = () => {
+        activeSourcesRef.current.forEach(source => {
+            try {
+                // OscillatorNodes don't have disconnect, but GainNodes do.
+                // It's safer to just let them finish or stop them.
+                if ('stop' in source) {
+                    (source as OscillatorNode).stop();
+                }
+                source.disconnect();
+            } catch(e) {
+                // Ignore errors if already disconnected or stopped
+            }
+        });
+        activeSourcesRef.current = [];
+    };
+
+    const playChord = (chord: Chord, duration: number = 1.5) => {
+        if (!audioContextRef.current) {
+            audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+        }
+        const ac = audioContextRef.current;
+        if (ac.state === 'suspended') {
+            ac.resume();
+        }
+
+        stopAllNotes();
+
+        const notes = getMidiNotesForChord(chord.rootNote, chord.chordType, chord.octave);
+        const now = ac.currentTime;
+
+        notes.forEach(midiNote => {
+            const osc = ac.createOscillator();
+            const gainNode = ac.createGain();
+
+            osc.connect(gainNode);
+            gainNode.connect(ac.destination);
+
+            const freq = 440 * Math.pow(2, (midiNote - 69) / 12);
+            osc.frequency.setValueAtTime(freq, now);
+            osc.type = 'sawtooth';
+
+            gainNode.gain.setValueAtTime(0, now);
+            gainNode.gain.linearRampToValueAtTime(0.2, now + 0.02);
+            gainNode.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+            
+            osc.start(now);
+            osc.stop(now + duration);
+            activeSourcesRef.current.push(gainNode, osc);
+        });
+    };
     
+    const stopPlayback = useCallback(() => {
+        setIsPlaying(false);
+        setCurrentChordIndex(null);
+        if (playbackTimerRef.current) {
+            clearTimeout(playbackTimerRef.current);
+            playbackTimerRef.current = null;
+        }
+        stopAllNotes();
+    }, []);
+
+    useEffect(() => {
+        return () => {
+            stopPlayback();
+        };
+    }, [stopPlayback]);
+
+    const startPlayback = () => {
+        if (chords.length === 0) return;
+        setIsPlaying(true);
+        let index = 0;
+        
+        const ticksPerPart = numBars * 4 * TICKS_PER_QUARTER_NOTE;
+        const ticksPerChord = ticksPerPart / chords.length;
+        const secondsPerTick = (60 / bpm) / TICKS_PER_QUARTER_NOTE;
+        const secondsPerChord = ticksPerChord * secondsPerTick;
+
+        const loop = () => {
+            setCurrentChordIndex(index);
+            playChord(chords[index], secondsPerChord);
+            
+            index = (index + 1) % chords.length;
+
+            playbackTimerRef.current = window.setTimeout(loop, secondsPerChord * 1000);
+        };
+        
+        loop();
+    };
+
+    const handlePlayToggle = () => {
+        if (isPlaying) {
+            stopPlayback();
+        } else {
+            startPlayback();
+        }
+    };
+
     const handleDownloadMidi = () => {
         if (chords.length === 0) {
             alert("Please add some chords first.");
@@ -43,7 +152,6 @@ export const MidiChordGenerator: React.FC = () => {
 
         setIsGenerating(true);
         
-        // Use a timeout to allow the UI to update to show the spinner
         setTimeout(() => {
             try {
                 const ticksPerPart = numBars * 4 * TICKS_PER_QUARTER_NOTE;
@@ -120,10 +228,33 @@ export const MidiChordGenerator: React.FC = () => {
             {/* Right Column: Results */}
             <div className="lg:col-span-2 bg-gray-800/50 p-4 rounded-lg border border-gray-700/50 space-y-6 flex flex-col">
                 <div>
-                    <h3 className="font-semibold text-lg mb-2">Chord Progression</h3>
-                    <div className="p-3 bg-black/30 rounded-md min-h-[60px] flex flex-wrap gap-2 items-center">
-                        {chords.map((c, i) => <span key={i} className="inline-block bg-gray-700 text-white py-1.5 px-3 rounded-full text-sm font-medium">{c.rootNote}{c.chordType}</span>)}
-                        {chords.length === 0 && <p className="text-gray-500">Add some chords or use the suggester.</p>}
+                    <div className="flex justify-between items-center mb-2">
+                        <h3 className="font-semibold text-lg">Chord Progression</h3>
+                        <button 
+                            onClick={handlePlayToggle} 
+                            disabled={chords.length === 0}
+                            className="flex items-center gap-2 bg-red-600/80 hover:bg-red-600 disabled:bg-red-900/50 disabled:cursor-not-allowed text-white font-bold py-2 px-4 rounded-lg transition"
+                        >
+                            {isPlaying ? <Stop/> : <Play/>}
+                            <span>{isPlaying ? 'Stop' : 'Play'}</span>
+                        </button>
+                    </div>
+
+                    <div className="grid grid-cols-4 gap-2 p-3 bg-black/30 rounded-md min-h-[120px] content-start">
+                        {chords.map((c, i) => (
+                             <div key={i} className="relative group">
+                                <button 
+                                    onClick={() => playChord(c)}
+                                    className={`p-4 w-full h-full rounded-lg text-center font-bold transition-all duration-150 ${currentChordIndex === i ? 'bg-red-500 ring-2 ring-white scale-105' : 'bg-gray-700 hover:bg-gray-600'}`}
+                                >
+                                    {c.rootNote}{c.chordType}
+                                </button>
+                                <button onClick={() => removeChord(i)} className="absolute -top-1.5 -right-1.5 bg-red-600 hover:bg-red-500 rounded-full h-5 w-5 flex items-center justify-center text-xs opacity-0 group-hover:opacity-100 transition-opacity" aria-label="Remove chord">
+                                    &times;
+                                </button>
+                            </div>
+                        ))}
+                        {chords.length === 0 && <p className="col-span-4 text-gray-500 self-center text-center">Add some chords or use the suggester.</p>}
                     </div>
                 </div>
                 

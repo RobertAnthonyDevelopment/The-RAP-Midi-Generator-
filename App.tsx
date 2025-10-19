@@ -3,8 +3,9 @@ import { Logo } from './components/Logo';
 import { SongSketchpad } from './components/SongSketchpad';
 import { MidiChordGenerator } from './components/MidiChordGenerator';
 import { DAW } from './components/DAW';
-import { SongStructure, DAWProject, DAWTrack } from './types';
+import { SongStructure, DAWProject } from './types';
 import { TICKS_PER_QUARTER_NOTE } from './constants';
+import { loadProjectFromFile } from './utils/projectPersistence';
 
 type Tab = 'MIDI Generator' | 'Sketchpad' | 'DAW';
 
@@ -49,29 +50,24 @@ const initialDawProject: DAWProject = {
 
 const App: React.FC = () => {
     const [activeTab, setActiveTab] = useState<Tab>('DAW');
-    const [project, setProject] = useState<DAWProject>(() => {
-        try {
-            const savedProject = localStorage.getItem('gemini-daw-project');
-            if (savedProject) {
-                // Note: AudioBuffers can't be serialized to JSON, so they will be lost.
-                // A real app would use IndexedDB to store audio data.
-                return JSON.parse(savedProject);
-            }
-        } catch (error) {
-            console.error("Failed to load project from local storage", error);
-        }
-        return initialDawProject;
-    });
+    const [project, setProject] = useState<DAWProject>(initialDawProject);
+    const [projectKey, setProjectKey] = useState(Date.now()); // Used to force re-mount of DAW on project load
 
-    useEffect(() => {
+    const handleProjectChange = (newProject: DAWProject) => {
+        setProject(newProject);
+    };
+
+    const handleLoadProject = async (file: File) => {
         try {
-            // A simplified persistence model. Ignores non-serializable data like AudioBuffers.
-            const projectToSave = { ...project, tracks: project.tracks.map(t => ({...t, clips: []}))};
-            localStorage.setItem('gemini-daw-project', JSON.stringify(projectToSave));
+            const loadedProject = await loadProjectFromFile(file);
+            setProject(loadedProject);
+            setProjectKey(Date.now()); // Change key to force DAW to re-initialize with new project
+            setActiveTab('DAW');
         } catch (error) {
-            console.error("Failed to save project to local storage", error);
+            console.error(error);
+            alert("Could not load project file. It might be invalid or corrupted.");
         }
-    }, [project]);
+    };
 
 
     const handleExport = (song: SongStructure) => {
@@ -86,7 +82,7 @@ const App: React.FC = () => {
             case 'Sketchpad':
                 return <SongSketchpad onExportToDAW={handleExport} />;
             case 'DAW':
-                return <DAW initialProject={project} onProjectChange={setProject} />;
+                return <DAW key={projectKey} initialProject={project} onProjectChange={handleProjectChange} onLoadProjectRequest={handleLoadProject} />;
             default:
                 return null;
         }

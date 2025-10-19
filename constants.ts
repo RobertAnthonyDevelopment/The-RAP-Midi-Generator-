@@ -35,3 +35,15 @@ export const NOTE_DURATIONS: Record<NoteDuration, number> = {
     'Half Note': TICKS_PER_QUARTER_NOTE * 2,
     'Whole Note': TICKS_PER_QUARTER_NOTE * 4,
 };
+
+export const DRUM_MIDI_MAP = {
+    KICK: 36,
+    SNARE: 38,
+    CLOSED_HAT: 42,
+    OPEN_HAT: 46,
+    CRASH: 49,
+    RIDE: 51,
+    TOM_HI: 50,
+    TOM_MID: 47,
+    TOM_LOW: 43,
+} as const;

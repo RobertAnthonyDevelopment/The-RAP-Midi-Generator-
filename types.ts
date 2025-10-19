@@ -20,3 +20,16 @@ export interface MelodyNote {
     startTick: number;
     durationTicks: number;
 }
+
+export interface DrumNote {
+    midiNote: number;
+    startTick: number;
+    durationTicks: number;
+}
+
+export interface SongPart {
+  id: string;
+  name: string; // e.g., 'Verse', 'Chorus'
+  chords: Chord[];
+  melody: MelodyNote[] | null;
+}

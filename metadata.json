@@ -1,0 +1,5 @@
+{
+  "name": "MIDI Chord Generator",
+  "description": "An intelligent MIDI chord generator and progression suggester powered by the Gemini API. Create single chords or get creative ideas for entire progressions based on your desired mood or genre.",
+  "requestFramePermissions": []
+}

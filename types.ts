@@ -14,3 +14,9 @@ export interface Chord {
     chordType: ChordType;
     octave: number;
 }
+
+export interface MelodyNote {
+    midiNote: number;
+    startTick: number;
+    durationTicks: number;
+}

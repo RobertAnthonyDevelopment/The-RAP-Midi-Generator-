@@ -1,8 +1,7 @@
-// This utility generates a simple, single-track MIDI file for a sequence of chords.
+import { MelodyNote } from '../types';
 
 const writeStringToBytes = (str: string) => str.split('').map(char => char.charCodeAt(0));
 
-// Variable-length quantity encoding for delta-times
 const writeVariableLength = (value: number): number[] => {
     let buffer = value & 0x7F;
     const bytes = [];
@@ -18,61 +17,14 @@ const writeVariableLength = (value: number): number[] => {
             break;
         }
     }
-    // The bytes are generated in the correct big-endian order for MIDI.
-    // The previous .reverse() call was incorrect and has been removed.
     return bytes;
 };
 
 const TICKS_PER_QUARTER_NOTE = 256;
 
-export const generateMidi = (chords: number[][], ticksPerChord: number, bpm: number, velocity: number = 100): Blob => {
-    // MThd chunk: Header
-    const MThd = [
-        ...writeStringToBytes('MThd'),
-        0x00, 0x00, 0x00, 0x06, // Chunk length (always 6)
-        0x00, 0x00,             // Format 0: single-track
-        0x00, 0x01,             // Number of tracks: 1
-        (TICKS_PER_QUARTER_NOTE >> 8) & 0xFF, TICKS_PER_QUARTER_NOTE & 0xFF
-    ];
-
-    // MTrk chunk: Track events
-    let trackEvents: number[] = [];
-
-    // Set Tempo Meta Event
-    const microsecondsPerQuarter = Math.round(60000000 / bpm);
-    trackEvents.push(0x00); // Delta-time 0
-    trackEvents.push(0xFF, 0x51, 0x03); // Meta event, set tempo, length 3
-    trackEvents.push((microsecondsPerQuarter >> 16) & 0xFF);
-    trackEvents.push((microsecondsPerQuarter >> 8) & 0xFF);
-    trackEvents.push(microsecondsPerQuarter & 0xFF);
-    
-    // This logic builds the track sequentially, ensuring correct timing.
-    // For each chord, turn on its notes, wait for the duration, then turn them off.
-    chords.forEach((notesOfChord) => {
-        // TURN ON all notes for the current chord.
-        // These events happen with a delta-time of 0 relative to the previous event
-        // (which is the note-off of the last chord).
-        notesOfChord.forEach(note => {
-            trackEvents.push(0x00); // delta-time 0 from previous event
-            trackEvents.push(0x90, note, velocity); // Note On event
-        });
-        
-        // WAIT for the chord duration, then TURN OFF the notes.
-        // We attach the delta-time for the duration to the *first* note-off event.
-        // All subsequent notes in the same chord are turned off at the same time (delta-time 0).
-        notesOfChord.forEach((note, noteIndex) => {
-            const deltaTime = (noteIndex === 0) ? ticksPerChord : 0;
-            trackEvents.push(...writeVariableLength(deltaTime));
-            trackEvents.push(0x80, note, 0x00); // Note Off event
-        });
-    });
-
-    // End of Track event
-    trackEvents.push(0x01); // Delta-time of 1 tick before ending
-    trackEvents.push(0xFF, 0x2F, 0x00); // End of Track meta event
-
+const createTrackChunk = (trackEvents: number[]): number[] => {
     const trackLength = trackEvents.length;
-    const MTrk = [
+    return [
         ...writeStringToBytes('MTrk'),
         (trackLength >> 24) & 0xFF,
         (trackLength >> 16) & 0xFF,
@@ -80,7 +32,83 @@ export const generateMidi = (chords: number[][], ticksPerChord: number, bpm: num
         trackLength & 0xFF,
         ...trackEvents
     ];
+};
 
-    const midiData = new Uint8Array([...MThd, ...MTrk]);
+export const generateMidi = (
+    chords: number[][], 
+    ticksPerChord: number, 
+    bpm: number, 
+    melody: MelodyNote[] | null,
+    velocity: number = 100
+): Blob => {
+    const numTracks = melody ? 2 : 1;
+    
+    // MThd chunk: Header
+    const MThd = [
+        ...writeStringToBytes('MThd'),
+        0x00, 0x00, 0x00, 0x06, // Chunk length
+        0x00, 0x01,             // Format 1: multi-track
+        0x00, numTracks,        // Number of tracks
+        (TICKS_PER_QUARTER_NOTE >> 8) & 0xFF, TICKS_PER_QUARTER_NOTE & 0xFF
+    ];
+
+    // Track 1: Chords & Tempo
+    let chordTrackEvents: number[] = [];
+    const microsecondsPerQuarter = Math.round(60000000 / bpm);
+    chordTrackEvents.push(0x00); // Delta-time 0
+    chordTrackEvents.push(0xFF, 0x51, 0x03); // Meta event, set tempo
+    chordTrackEvents.push((microsecondsPerQuarter >> 16) & 0xFF);
+    chordTrackEvents.push((microsecondsPerQuarter >> 8) & 0xFF);
+    chordTrackEvents.push(microsecondsPerQuarter & 0xFF);
+    
+    chords.forEach((notesOfChord) => {
+        notesOfChord.forEach(note => {
+            chordTrackEvents.push(0x00);
+            chordTrackEvents.push(0x90, note, velocity); // Note On (channel 0)
+        });
+        notesOfChord.forEach((note, noteIndex) => {
+            const deltaTime = (noteIndex === 0) ? ticksPerChord : 0;
+            chordTrackEvents.push(...writeVariableLength(deltaTime));
+            chordTrackEvents.push(0x80, note, 0x00); // Note Off (channel 0)
+        });
+    });
+
+    chordTrackEvents.push(0x01, 0xFF, 0x2F, 0x00); // End of Track
+    const chordTrackChunk = createTrackChunk(chordTrackEvents);
+
+    let allChunks = [...MThd, ...chordTrackChunk];
+
+    // Track 2: Melody (if it exists)
+    if (melody) {
+        let melodyTrackEvents: number[] = [];
+        const timedEvents: { tick: number; message: number[] }[] = [];
+
+        melody.forEach(note => {
+            timedEvents.push({
+                tick: note.startTick,
+                message: [0x91, note.midiNote, velocity + 10] // Note On (channel 1)
+            });
+            timedEvents.push({
+                tick: note.startTick + note.durationTicks,
+                message: [0x81, note.midiNote, 0x00] // Note Off (channel 1)
+            });
+        });
+
+        timedEvents.sort((a, b) => a.tick - b.tick);
+
+        let lastTick = 0;
+        timedEvents.forEach(event => {
+            const deltaTime = event.tick - lastTick;
+            melodyTrackEvents.push(...writeVariableLength(deltaTime));
+            melodyTrackEvents.push(...event.message);
+            lastTick = event.tick;
+        });
+
+        melodyTrackEvents.push(0x01, 0xFF, 0x2F, 0x00); // End of Track
+        const melodyTrackChunk = createTrackChunk(melodyTrackEvents);
+        allChunks.push(...melodyTrackChunk);
+    }
+    
+    const midiData = new Uint8Array(allChunks);
     return new Blob([midiData], { type: 'audio/midi' });
 };

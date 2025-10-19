@@ -4,6 +4,7 @@ import { TimelineRuler } from './TimelineRuler';
 import { TrackHeader } from './TrackHeader';
 import { Inspector } from './Inspector';
 import { Waveform } from './Waveform';
+import { MidiNoteVisualizer } from './MidiNoteVisualizer';
 import { Modal } from './Modal';
 import { PianoRoll } from './PianoRoll';
 import { Mixer } from './Mixer';
@@ -22,6 +23,12 @@ interface DAWProps {
 
 const pixelsPerTick = 0.05;
 const ticksPerBar = TICKS_PER_QUARTER_NOTE * 4;
+
+const ticksToSeconds = (ticks: number, bpm: number): number => {
+    const secondsPerQuarter = 60 / bpm;
+    const secondsPerTick = secondsPerQuarter / TICKS_PER_QUARTER_NOTE;
+    return ticks * secondsPerTick;
+};
 
 export const DAW: React.FC<DAWProps> = ({ initialProject, onProjectChange }) => {
     const [project, setProject] = useState<DAWProject>(initialProject);
@@ -46,8 +53,12 @@ export const DAW: React.FC<DAWProps> = ({ initialProject, onProjectChange }) => 
     // --- Audio Engine ---
     const audioContextRef = useRef<AudioContext>();
     const activeVKSourcesRef = useRef(new Map<string, any>());
+    const activePlaybackSourcesRef = useRef(new Map<string, any>());
     const trackNodesRef = useRef(new Map<string, { gain: GainNode, panner: StereoPannerNode }>());
-
+    const playbackTimeRef = useRef(0);
+    const animationFrameIdRef = useRef<number>();
+    
+    // Initialize Audio Context and Track Nodes
     useEffect(() => {
         if (!audioContextRef.current) {
             audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
@@ -56,7 +67,6 @@ export const DAW: React.FC<DAWProps> = ({ initialProject, onProjectChange }) => 
         
         const currentTrackIds = new Set(project.tracks.map(t => t.id));
         
-        // Remove old nodes for deleted tracks
         for (const trackId of trackNodesRef.current.keys()) {
             if (!currentTrackIds.has(trackId)) {
                 trackNodesRef.current.get(trackId)?.gain.disconnect();
@@ -64,7 +74,6 @@ export const DAW: React.FC<DAWProps> = ({ initialProject, onProjectChange }) => 
             }
         }
         
-        // Create/update track nodes
         project.tracks.forEach(track => {
             let nodes = trackNodesRef.current.get(track.id);
             if (!nodes) {
@@ -84,6 +93,135 @@ export const DAW: React.FC<DAWProps> = ({ initialProject, onProjectChange }) => 
         });
         
     }, [project.tracks]);
+    
+    const playNote = useCallback((
+        track: DAWTrack,
+        note: MelodyNote,
+        when: number,
+    ) => {
+        const audioContext = audioContextRef.current;
+        const trackNodes = trackNodesRef.current.get(track.id);
+        const { instrument } = track;
+        if (!audioContext || !trackNodes || !instrument) return;
+
+        const durationSec = ticksToSeconds(note.durationTicks, project.bpm);
+        const noteId = `play-${track.id}-${note.midiNote}-${when}`;
+        
+        if (instrument.type === 'synth') {
+            const params = instrument.params;
+            const freq = 440 * Math.pow(2, (note.midiNote - 69) / 12);
+            
+            const gainNode = audioContext.createGain();
+            gainNode.connect(trackNodes.gain);
+            gainNode.gain.setValueAtTime(0, when);
+            gainNode.gain.linearRampToValueAtTime(note.velocity, when + params.envelope.attack);
+            gainNode.gain.exponentialRampToValueAtTime(params.envelope.sustain * note.velocity, when + params.envelope.attack + params.envelope.decay);
+            gainNode.gain.setValueAtTime(params.envelope.sustain * note.velocity, when + durationSec - params.envelope.release);
+            gainNode.gain.linearRampToValueAtTime(0, when + durationSec);
+
+            const filter = audioContext.createBiquadFilter();
+            filter.type = params.filter.type;
+            filter.frequency.setValueAtTime(params.filter.frequency, when);
+            filter.Q.setValueAtTime(params.filter.q, when);
+            
+            const osc1 = audioContext.createOscillator();
+            osc1.type = params.oscillator1.type;
+            osc1.frequency.value = freq;
+            osc1.detune.value = params.oscillator1.detune;
+            
+            const osc2 = audioContext.createOscillator();
+            osc2.type = params.oscillator2.type;
+            osc2.frequency.value = freq;
+            osc2.detune.value = params.oscillator2.detune;
+            
+            osc1.connect(filter);
+            osc2.connect(filter);
+            filter.connect(gainNode);
+            
+            osc1.start(when);
+            osc2.start(when);
+            osc1.stop(when + durationSec);
+            osc2.stop(when + durationSec);
+            
+            activePlaybackSourcesRef.current.set(noteId, { osc1, osc2, gainNode });
+        } else if (instrument.type === 'sampler' && instrument.sample) {
+            const source = audioContext.createBufferSource();
+            source.buffer = instrument.sample.buffer;
+            source.connect(trackNodes.gain);
+            source.start(when);
+            activePlaybackSourcesRef.current.set(noteId, source);
+        }
+
+    }, [project.bpm]);
+    
+    const stopPlayback = useCallback(() => {
+        if (animationFrameIdRef.current) {
+            cancelAnimationFrame(animationFrameIdRef.current);
+        }
+        activePlaybackSourcesRef.current.forEach(source => {
+            try {
+                if (source.stop) { // For BufferSource
+                    source.stop(0);
+                } else if (source.osc1) { // For Synth
+                    source.osc1.stop(0);
+                    source.osc2.stop(0);
+                }
+            } catch(e) { /* ignore errors from stopping already stopped sources */ }
+        });
+        activePlaybackSourcesRef.current.clear();
+    }, []);
+
+    const startPlayback = useCallback((startFromTick: number) => {
+        stopPlayback();
+        const audioContext = audioContextRef.current;
+        if (!audioContext || audioContext.state === 'suspended') {
+            audioContext?.resume();
+        }
+        if (!audioContext) return;
+
+        const soloedTracks = project.tracks.filter(t => t.isSoloed);
+        const audibleTracks = project.tracks.filter(t => !t.isMuted && (soloedTracks.length === 0 || t.isSoloed));
+        
+        const playbackStartTime = audioContext.currentTime;
+        playbackTimeRef.current = playbackStartTime;
+
+        const scheduleStartOffset = ticksToSeconds(startFromTick, project.bpm);
+
+        audibleTracks.forEach(track => {
+            track.clips.forEach(clip => {
+                if(clip.type === 'midi') {
+                    clip.notes.forEach(note => {
+                        const noteStartInTicks = clip.startTick + note.startTick;
+                        const notePlayTime = playbackStartTime + ticksToSeconds(noteStartInTicks, project.bpm) - scheduleStartOffset;
+                        if(notePlayTime >= playbackStartTime) {
+                             playNote(track, note, notePlayTime);
+                        }
+                    });
+                }
+            });
+        });
+        
+        const animate = () => {
+            const elapsedTime = audioContext.currentTime - playbackTimeRef.current;
+            const elapsedTicks = (elapsedTime / (60 / project.bpm)) * TICKS_PER_QUARTER_NOTE;
+            let newPosition = startFromTick + elapsedTicks;
+
+            const { isEnabled, startTick, endTick } = project.loopRegion;
+            if (isEnabled && newPosition >= endTick) {
+                const loopDurationTicks = endTick - startTick;
+                const overshoot = newPosition - endTick;
+                newPosition = startTick + (overshoot % loopDurationTicks);
+                startPlayback(startTick); // Reschedule for the next loop
+                return; // Exit this animation frame, a new one will start
+            }
+
+            setPlayheadPosition(newPosition);
+            animationFrameIdRef.current = requestAnimationFrame(animate);
+        };
+        animationFrameIdRef.current = requestAnimationFrame(animate);
+
+    }, [project, stopPlayback, playNote]);
+
 
     const playVirtualKey = useCallback((midiNote: number) => {
         const track = selectedTrack;
@@ -141,7 +279,6 @@ export const DAW: React.FC<DAWProps> = ({ initialProject, onProjectChange }) => 
             source.buffer = instrument.sample.buffer;
             source.connect(trackNodes.gain);
             source.start();
-            // Sampler notes are fire-and-forget for virtual keyboard
         }
     }, [selectedTrack]);
 
@@ -166,25 +303,6 @@ export const DAW: React.FC<DAWProps> = ({ initialProject, onProjectChange }) => 
 
         activeVKSourcesRef.current.delete(noteId);
     }, [selectedTrack]);
-    
-    useEffect(() => {
-        let animationFrameId: number;
-        if (isPlaying) {
-            const loop = () => {
-                setPlayheadPosition(prev => {
-                    const nextPos = prev + 10;
-                    const { isEnabled, startTick, endTick } = project.loopRegion;
-                    if (isEnabled && nextPos >= endTick) {
-                        return startTick;
-                    }
-                    return nextPos % project.durationTicks;
-                });
-                animationFrameId = requestAnimationFrame(loop);
-            };
-            animationFrameId = requestAnimationFrame(loop);
-        }
-        return () => cancelAnimationFrame(animationFrameId);
-    }, [isPlaying, project.durationTicks, project.loopRegion]);
 
     // Close context menu on any click
     useEffect(() => {
@@ -216,7 +334,7 @@ export const DAW: React.FC<DAWProps> = ({ initialProject, onProjectChange }) => 
             clips: [],
             volume: 1, pan: 0, isMuted: false, isSoloed: false,
             color: '#8b5cf6', icon: type === 'midi' ? '🎵' : '🎤',
-            instrument: type === 'midi' ? { type: 'sampler' } : undefined,
+            instrument: type === 'midi' ? { type: 'synth', params: { oscillator1: { type: 'sawtooth', detune: 0 }, oscillator2: { type: 'square', detune: -10 }, envelope: { attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5 }, filter: { type: 'lowpass', frequency: 5000, q: 1 } } } : undefined,
             fx: { eq: { lowGain: 0, midGain: 0, highGain: 0 }, compressor: { threshold: -24, ratio: 4, attack: 0.003, release: 0.25, knee: 5 } }
         };
         updateProject(p => ({...p, tracks: [...p.tracks, newTrack]}));
@@ -240,7 +358,6 @@ export const DAW: React.FC<DAWProps> = ({ initialProject, onProjectChange }) => 
             notes: [],
             startTick: tick,
             durationTicks: 4 * TICKS_PER_QUARTER_NOTE * 4, // 4 bars
-            velocity: 0.8,
         };
         updateTrack(trackId, { clips: [...track.clips, newClip] });
     };
@@ -266,6 +383,22 @@ export const DAW: React.FC<DAWProps> = ({ initialProject, onProjectChange }) => 
             updateClip(selectedTrackId, clipId, { pattern, notes });
         }
     };
+    
+    const handleTransportPlay = () => {
+        if(isPlaying) {
+            setIsPlaying(false);
+            stopPlayback();
+        } else {
+            setIsPlaying(true);
+            startPlayback(playheadPosition);
+        }
+    };
+    
+    const handleTransportStop = () => {
+         setIsPlaying(false);
+         stopPlayback();
+         setPlayheadPosition(project.loopRegion.isEnabled ? project.loopRegion.startTick : 0);
+    };
 
     const handleContextMenu = (e: React.MouseEvent, track: DAWTrack, clip?: DAWClip) => {
         e.preventDefault();
@@ -288,7 +421,7 @@ export const DAW: React.FC<DAWProps> = ({ initialProject, onProjectChange }) => 
 
     const handleCreateClip = () => {
         if (!contextMenu) return;
-        addClip(contextMenu.trackId, Math.floor(contextMenu.tick / ticksPerBar) * ticksPerBar); // Snap to bar
+        addClip(contextMenu.trackId, Math.floor(contextMenu.tick / ticksPerBar) * ticksPerBar);
         setContextMenu(null);
     };
 
@@ -319,6 +452,7 @@ export const DAW: React.FC<DAWProps> = ({ initialProject, onProjectChange }) => 
 
     const handleOpenPianoRoll = () => {
         if (contextMenu?.clip?.type === 'midi') {
+            setSelectedTrackId(contextMenu.trackId);
             setModal({ type: 'piano-roll', clip: contextMenu.clip as MIDIDAWClip });
         }
         setContextMenu(null);
@@ -339,12 +473,14 @@ export const DAW: React.FC<DAWProps> = ({ initialProject, onProjectChange }) => 
                 style={style}
                 onDoubleClick={(e) => {
                     e.stopPropagation();
+                    setSelectedTrackId(track.id);
                     if (clip.type === 'midi') setModal({type: 'piano-roll', clip})
                 }}
                 onContextMenu={(e) => handleContextMenu(e, track, clip)}
             >
-                <div className="p-1 text-xs font-bold truncate">{clip.name}</div>
+                <div className="p-1 text-xs font-bold truncate select-none">{clip.name}</div>
                 {clip.type === 'audio' && <Waveform audioBuffer={clip.audioBuffer} height={40} />}
+                {clip.type === 'midi' && <MidiNoteVisualizer notes={clip.notes} durationTicks={clip.durationTicks} height={40} />}
              </div>
         )
     };
@@ -353,13 +489,13 @@ export const DAW: React.FC<DAWProps> = ({ initialProject, onProjectChange }) => 
         <div className="flex flex-col h-[85vh] bg-[#3c3c3c] rounded-lg overflow-hidden">
             {contextMenu && (
                 <ul 
-                    className="fixed z-30 bg-gray-900 border border-gray-700 rounded-md shadow-lg py-1 w-48 text-sm"
+                    className="fixed z-50 bg-gray-900 border border-gray-700 rounded-md shadow-lg py-1 w-48 text-sm"
                     style={{ top: contextMenu.y, left: contextMenu.x }}
-                    onClick={(e) => e.stopPropagation()} // Prevent menu clicks from closing itself
+                    onClick={(e) => e.stopPropagation()}
                 >
                     {contextMenu.clip ? (
                         <>
-                            <li onClick={handleOpenPianoRoll} className="px-3 py-1.5 hover:bg-red-600 cursor-pointer">Open in Piano Roll</li>
+                            {contextMenu.clip.type === 'midi' && <li onClick={handleOpenPianoRoll} className="px-3 py-1.5 hover:bg-red-600 cursor-pointer">Open in Piano Roll</li>}
                             <li onClick={handleDuplicateClip} className="px-3 py-1.5 hover:bg-red-600 cursor-pointer">Duplicate</li>
                             <li onClick={handleDeleteClip} className="px-3 py-1.5 hover:bg-red-600 cursor-pointer">Delete</li>
                         </>
@@ -374,7 +510,15 @@ export const DAW: React.FC<DAWProps> = ({ initialProject, onProjectChange }) => 
                 {modal && (
                     <Modal onClose={() => setModal(null)}>
                         {modal.type === 'mixer' && <Mixer tracks={project.tracks} updateTrack={updateTrack} />}
-                        {modal.type === 'piano-roll' && modal.clip && <PianoRoll clip={modal.clip} onSave={handleSavePianoRoll} onClose={() => setModal(null)} />}
+                        {modal.type === 'piano-roll' && modal.clip && selectedTrackId && 
+                            <PianoRoll 
+                                clip={modal.clip} 
+                                onSave={(notes) => updateClip(selectedTrackId, modal.clip!.id, { notes })}
+                                onClose={() => setModal(null)} 
+                                onNoteOn={playVirtualKey} 
+                                onNoteOff={stopVirtualKey} 
+                            />
+                        }
                         {modal.type === 'channel-rack' && modal.clip && <ChannelRack clip={modal.clip} onClose={() => setModal(null)} onSave={handleSaveChannelRack}/>}
                     </Modal>
                 )}
@@ -399,8 +543,8 @@ export const DAW: React.FC<DAWProps> = ({ initialProject, onProjectChange }) => 
                     <div className="h-20 bg-[#282828] border-b-2 border-black p-2 flex items-center gap-4">
                         {/* Transport Controls */}
                         <div className="flex items-center gap-1 p-2 bg-black/30 rounded-lg">
-                            <button onClick={() => setPlayheadPosition(project.loopRegion.isEnabled ? project.loopRegion.startTick : 0)} className="p-2 text-gray-300 hover:text-white"><ToStart /></button>
-                            <button onClick={() => setIsPlaying(!isPlaying)} className="p-3 bg-red-600 hover:bg-red-500 rounded-full text-white">{isPlaying ? <Stop/> : <Play />}</button>
+                            <button onClick={handleTransportStop} className="p-2 text-gray-300 hover:text-white"><ToStart /></button>
+                            <button onClick={handleTransportPlay} className="p-3 bg-red-600 hover:bg-red-500 rounded-full text-white">{isPlaying ? <Stop/> : <Play />}</button>
                             <button className="p-2 text-gray-300 hover:text-white"><Record /></button>
                         </div>
                         <LCDDisplay 
@@ -430,7 +574,12 @@ export const DAW: React.FC<DAWProps> = ({ initialProject, onProjectChange }) => 
                                 <div 
                                     key={track.id}
                                     className={`h-20 border-b border-black/50 ${track.id === selectedTrackId ? 'bg-gray-700/30' : ''}`}
-                                    onDoubleClick={(e) => addClip(track.id, (e.nativeEvent.offsetX + scrollLeft) / pixelsPerTick)}
+                                    onDoubleClick={(e) => {
+                                        if (e.target === e.currentTarget) {
+                                            const tick = (e.nativeEvent.offsetX + scrollLeft) / pixelsPerTick;
+                                            addClip(track.id, tick);
+                                        }
+                                    }}
                                     onContextMenu={(e) => handleContextMenu(e, track)}
                                 >
                                     {track.clips.map(c => renderClip(c, track))}

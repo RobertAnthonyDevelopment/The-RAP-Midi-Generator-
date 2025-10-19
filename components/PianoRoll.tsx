@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { MIDIDAWClip, MelodyNote } from '../types';
 import { TICKS_PER_QUARTER_NOTE, MIDI_TO_NOTE } from '../constants';
 
@@ -6,6 +6,8 @@ interface PianoRollProps {
     clip: MIDIDAWClip;
     onSave: (updatedNotes: MelodyNote[]) => void;
     onClose: () => void;
+    onNoteOn: (midiNote: number) => void;
+    onNoteOff: (midiNote: number) => void;
 }
 
 const pixelsPerTick = 0.1;
@@ -13,47 +15,101 @@ const noteHeight = 22;
 const numKeys = 88;
 const startNote = 21; // A0
 const velocityPaneHeight = 100;
+const snapTicks = TICKS_PER_QUARTER_NOTE / 4; // 16th note snapping
 
 const getVelocityColor = (velocity: number) => {
-    // Green (low) -> Yellow -> Red (high)
     const hue = (1 - velocity) * 120;
     return `hsl(${hue}, 90%, 50%)`;
 };
 
-export const PianoRoll: React.FC<PianoRollProps> = ({ clip, onSave, onClose }) => {
+export const PianoRoll: React.FC<PianoRollProps> = ({ clip, onSave, onClose, onNoteOn, onNoteOff }) => {
     const [notes, setNotes] = useState<MelodyNote[]>(() => JSON.parse(JSON.stringify(clip.notes)));
-    const [selectedNote, setSelectedNote] = useState<MelodyNote | null>(null);
+    const [selectedNoteIndex, setSelectedNoteIndex] = useState<number | null>(null);
     const gridRef = useRef<HTMLDivElement>(null);
     const keyRef = useRef<HTMLDivElement>(null);
     const velocityRef = useRef<HTMLDivElement>(null);
+    const notesCache = useRef(notes);
 
-    const handleNoteClick = (note: MelodyNote) => {
-        setSelectedNote(note);
+    useEffect(() => {
+        notesCache.current = notes;
+    }, [notes]);
+
+    const handleNoteClick = (noteIndex: number) => {
+        setSelectedNoteIndex(noteIndex);
+        const note = notes[noteIndex];
+        if (note) {
+            onNoteOn(note.midiNote);
+            setTimeout(() => onNoteOff(note.midiNote), 250);
+        }
+    };
+    
+    const deleteNote = (noteIndex: number) => {
+        const newNotes = notes.filter((_, i) => i !== noteIndex);
+        setNotes(newNotes);
+        onSave(newNotes);
     };
 
-    const handleGridDoubleClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    const handleGridClick = (e: React.MouseEvent<HTMLDivElement>) => {
         if (!gridRef.current) return;
         const rect = gridRef.current.getBoundingClientRect();
         const x = e.clientX - rect.left + gridRef.current.scrollLeft;
         const y = e.clientY - rect.top + gridRef.current.scrollTop;
 
-        const startTick = Math.floor(x / pixelsPerTick / TICKS_PER_QUARTER_NOTE) * TICKS_PER_QUARTER_NOTE;
+        const startTick = Math.floor(x / (pixelsPerTick * snapTicks)) * snapTicks;
         const midiNote = startNote + numKeys - 1 - Math.floor(y / noteHeight);
         
         const newNote: MelodyNote = {
             startTick,
             durationTicks: TICKS_PER_QUARTER_NOTE,
             midiNote,
-            velocity: 0.8 // Default velocity
+            velocity: 0.8
         };
-        setNotes(prev => [...prev, newNote]);
+        const newNotes = [...notes, newNote];
+        setNotes(newNotes);
+        onNoteOn(newNote.midiNote);
+        setTimeout(() => onNoteOff(newNote.midiNote), 250);
+        onSave(newNotes);
     };
 
-    const updateNoteVelocity = (noteToUpdate: MelodyNote, newVelocity: number) => {
-        setNotes(prev => prev.map(n => n === noteToUpdate ? { ...n, velocity: Math.max(0.01, Math.min(1, newVelocity)) } : n));
-        setSelectedNote(prev => prev === noteToUpdate ? { ...prev, velocity: Math.max(0.01, Math.min(1, newVelocity)) } : prev);
+    const updateNoteVelocity = (noteIndex: number, newVelocity: number) => {
+        const newNotes = [...notes];
+        newNotes[noteIndex] = { ...newNotes[noteIndex], velocity: Math.max(0.01, Math.min(1, newVelocity)) };
+        setNotes(newNotes);
     };
     
+    const handleResizeMouseDown = useCallback((e: React.MouseEvent, noteIndex: number) => {
+        e.stopPropagation();
+        e.preventDefault();
+
+        const startX = e.clientX;
+        const initialDuration = notesCache.current[noteIndex].durationTicks;
+
+        const handleMouseMove = (moveEvent: MouseEvent) => {
+            const deltaX = moveEvent.clientX - startX;
+            const deltaTicks = deltaX / pixelsPerTick;
+            const newDuration = Math.max(snapTicks, Math.round((initialDuration + deltaTicks) / snapTicks) * snapTicks);
+            
+            setNotes(currentNotes => {
+                const newNotes = [...currentNotes];
+                if (newNotes[noteIndex]) {
+                   newNotes[noteIndex] = { ...newNotes[noteIndex], durationTicks: newDuration };
+                }
+                return newNotes;
+            });
+        };
+
+        const handleMouseUp = () => {
+            document.removeEventListener('mousemove', handleMouseMove);
+            document.removeEventListener('mouseup', handleMouseUp);
+            onSave(notesCache.current);
+        };
+
+        document.addEventListener('mousemove', handleMouseMove);
+        document.addEventListener('mouseup', handleMouseUp);
+
+    }, [onSave]);
+
+
     // Sync scrolling
     useEffect(() => {
         const grid = gridRef.current;
@@ -82,7 +138,6 @@ export const PianoRoll: React.FC<PianoRollProps> = ({ clip, onSave, onClose }) =
             <header className="p-3 bg-[#3c3c3c] flex justify-between items-center border-b border-black">
                 <h2 className="text-xl font-bold">Piano Roll - {clip.name}</h2>
                 <div>
-                    <button onClick={() => onSave(notes)} className="bg-red-600 hover:bg-red-700 px-4 py-2 rounded-md mr-2">Save</button>
                     <button onClick={onClose} className="bg-gray-600 hover:bg-gray-700 px-4 py-2 rounded-md">Close</button>
                 </div>
             </header>
@@ -105,7 +160,7 @@ export const PianoRoll: React.FC<PianoRollProps> = ({ clip, onSave, onClose }) =
                         </div>
                     </div>
                     {/* Grid */}
-                    <div ref={gridRef} className="flex-grow relative overflow-auto" onDoubleClick={handleGridDoubleClick}>
+                    <div ref={gridRef} className="flex-grow relative overflow-auto" onClick={handleGridClick}>
                         <div className="relative" style={{ width: clip.durationTicks * pixelsPerTick, height: numKeys * noteHeight }}>
                             {/* Grid Lines */}
                             {[...Array(Math.floor(clip.durationTicks / TICKS_PER_QUARTER_NOTE))].map((_, i) => (
@@ -121,7 +176,7 @@ export const PianoRoll: React.FC<PianoRollProps> = ({ clip, onSave, onClose }) =
                             {notes.map((note, index) => (
                                 <div
                                     key={`${note.startTick}-${note.midiNote}-${index}`}
-                                    className={`absolute border rounded cursor-pointer hover:opacity-80 ${selectedNote === note ? 'ring-2 ring-white' : ''}`}
+                                    className={`absolute rounded group ${selectedNoteIndex === index ? 'ring-2 ring-white z-10' : ''}`}
                                     style={{
                                         left: note.startTick * pixelsPerTick,
                                         top: (numKeys - 1 - (note.midiNote - startNote)) * noteHeight,
@@ -130,8 +185,14 @@ export const PianoRoll: React.FC<PianoRollProps> = ({ clip, onSave, onClose }) =
                                         backgroundColor: getVelocityColor(note.velocity),
                                         borderColor: `hsl(${(1 - note.velocity) * 120}, 90%, 30%)`,
                                     }}
-                                    onClick={() => handleNoteClick(note)}
-                                ></div>
+                                    onClick={(e) => { e.stopPropagation(); handleNoteClick(index); }}
+                                    onDoubleClick={(e) => { e.stopPropagation(); deleteNote(index); }}
+                                >
+                                    <div
+                                         className="absolute right-0 top-0 h-full w-2 cursor-ew-resize opacity-0 group-hover:opacity-100"
+                                         onMouseDown={(e) => handleResizeMouseDown(e, index)}
+                                    />
+                                </div>
                             ))}
                         </div>
                     </div>
@@ -148,16 +209,19 @@ export const PianoRoll: React.FC<PianoRollProps> = ({ clip, onSave, onClose }) =
                                     style={{ left: note.startTick * pixelsPerTick }}
                                     onMouseDown={(e) => {
                                         e.preventDefault();
+                                        onNoteOn(note.midiNote);
                                         const startY = e.clientY;
                                         const startVelocity = note.velocity;
                                         const onMouseMove = (moveEvent: MouseEvent) => {
                                             const deltaY = startY - moveEvent.clientY;
                                             const newVelocity = startVelocity + deltaY / velocityPaneHeight;
-                                            updateNoteVelocity(note, newVelocity);
+                                            updateNoteVelocity(index, newVelocity);
                                         };
                                         const onMouseUp = () => {
+                                            onNoteOff(note.midiNote);
                                             document.removeEventListener('mousemove', onMouseMove);
                                             document.removeEventListener('mouseup', onMouseUp);
+                                            onSave(notesCache.current);
                                         };
                                         document.addEventListener('mousemove', onMouseMove);
                                         document.addEventListener('mouseup', onMouseUp);

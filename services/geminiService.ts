@@ -44,13 +44,13 @@ export async function suggestProgressions(userInput: string): Promise<string[]> 
   }
 }
 
-export async function generateSongStructure(userInput: string): Promise<{ name: string; chords: string[] }[]> {
+export async function generateSongStructure(userInput: string): Promise<{ name: string; bars: number; chords: string[] }[]> {
   try {
     const response = await ai.models.generateContent({
       model: "gemini-2.5-flash",
-      contents: `Generate a standard song structure (e.g., Verse, Chorus, Verse, Chorus, Bridge, Chorus) for a song about "${userInput}". For each part, create a unique 4-chord progression that fits the mood.`,
+      contents: `Generate a standard song structure (e.g., Verse, Chorus, Bridge) for a song about "${userInput}". A typical structure is Verse, Chorus, Verse, Chorus, Bridge, Chorus. For each part, define a common bar length (4, 8, or 16) and create a unique chord progression with one chord per bar.`,
       config: {
-        systemInstruction: "You are a helpful music theory assistant. Your goal is to generate song structures with chord progressions. You must return the output as a valid JSON array of objects. Each object should have a 'name' (string, e.g., 'Verse 1') and a 'chords' (array of 4 strings, e.g., ['C', 'G', 'Am', 'F']). Do not provide any other text, explanation, or markdown formatting.",
+        systemInstruction: "You are a music production AI. Generate song structures with chord progressions. Output a valid JSON array of objects. Each object must have a 'name' (string), 'bars' (integer, one chord per bar), and 'chords' (array of strings, length must equal 'bars'). Do not add any other text or markdown.",
         responseMimeType: "application/json",
         responseSchema: {
           type: Type.ARRAY,
@@ -59,13 +59,14 @@ export async function generateSongStructure(userInput: string): Promise<{ name: 
             type: Type.OBJECT,
             properties: {
               name: { type: Type.STRING, description: "The name of the song part, e.g., 'Verse 1' or 'Chorus'." },
+              bars: { type: Type.INTEGER, description: "The number of bars in this part." },
               chords: {
                 type: Type.ARRAY,
-                description: "An array of four chord names.",
+                description: "An array of chord names, one per bar.",
                 items: { type: Type.STRING }
               }
             },
-            required: ["name", "chords"]
+            required: ["name", "bars", "chords"]
           }
         },
         temperature: 0.8,
@@ -73,19 +74,38 @@ export async function generateSongStructure(userInput: string): Promise<{ name: 
     });
 
     const jsonText = response.text.trim();
-    const structure = JSON.parse(jsonText);
-    
-    if (Array.isArray(structure)) {
-      return structure;
-    } else {
-      throw new Error("Invalid response format from API.");
-    }
-
+    return JSON.parse(jsonText);
   } catch (error) {
     console.error("Error calling Gemini API for song structure:", error);
     throw new Error("Could not fetch song structure from the Gemini API.");
   }
 }
+
+
+export async function generateChordsForPart(description: string, bars: number, key: string): Promise<string[]> {
+    try {
+        const response = await ai.models.generateContent({
+            model: "gemini-2.5-flash",
+            contents: `Generate a ${bars}-bar chord progression for a song part described as "${description}". The song is in the key of ${key}, so make sure the chords fit well. Provide one chord per bar.`,
+            config: {
+                systemInstruction: `You are a music theory expert. Generate a chord progression as a JSON array of strings. The array must contain exactly ${bars} chord names. Do not add any other text.`,
+                responseMimeType: "application/json",
+                responseSchema: {
+                    type: Type.ARRAY,
+                    description: `An array of ${bars} chord names.`,
+                    items: { type: Type.STRING }
+                },
+                temperature: 0.7,
+            },
+        });
+        const jsonText = response.text.trim();
+        return JSON.parse(jsonText);
+    } catch (error) {
+        console.error("Error calling Gemini API for regenerating chords:", error);
+        throw new Error("Could not regenerate chords from the Gemini API.");
+    }
+}
+
 
 export async function generateDrumBeat(
   genre: string,
@@ -96,21 +116,21 @@ export async function generateDrumBeat(
   const numBars = Math.ceil(totalTicks / ticksPerBar);
 
   const prompt = `
-    You are an expert drum machine programmer. Your task is to generate a repeating 4-bar drum loop that fits a specific genre and tempo, and then extend it to cover the total duration of a song.
+    You are an expert drum machine programmer. Your task is to generate a repeating 2-bar drum loop that fits a specific genre and tempo, and then extend it to cover the total duration of a song.
 
     Parameters:
     - Genre: ${genre}
     - Tempo: ${bpm} BPM
     - Ticks per Quarter Note: ${TICKS_PER_QUARTER_NOTE}
     - Ticks per Bar: ${ticksPerBar}
-    - Loop Duration: 4 bars (${ticksPerBar * 4} ticks)
+    - Loop Duration: 2 bars (${ticksPerBar * 2} ticks)
     - Total Song Duration: ${totalTicks} ticks (${numBars} bars)
 
     Instructions:
-    1. Create a 4-bar drum pattern that is characteristic of the "${genre}" genre.
-    2. Use standard General MIDI drum mapping: Kick=${DRUM_MIDI_MAP.KICK}, Snare=${DRUM_MIDI_MAP.SNARE}, Closed Hi-Hat=${DRUM_MIDI_MAP.CLOSED_HAT}. You may also use Open Hi-Hat=${DRUM_MIDI_MAP.OPEN_HAT} and Crash=${DRUM_MIDI_MAP.CRASH} sparingly.
-    3. The pattern should be exactly ${ticksPerBar * 4} ticks long.
-    4. Repeat this 4-bar loop to fill the entire song duration of ${totalTicks} ticks.
+    1. Create a 2-bar drum pattern that is characteristic of the "${genre}" genre.
+    2. Use standard General MIDI drum mapping: Kick=${DRUM_MIDI_MAP.KICK}, Snare=${DRUM_MIDI_MAP.SNARE}, Closed Hi-Hat=${DRUM_MIDI_MAP.CLOSED_HAT}.
+    3. The pattern should be exactly ${ticksPerBar * 2} ticks long.
+    4. Repeat this 2-bar loop to fill the entire song duration of ${totalTicks} ticks.
 
     Output Format:
     Return a valid JSON array of drum note objects. Each object must have three integer properties:
@@ -170,10 +190,10 @@ export async function generateMelody(
     - Chord Progression for this section: [${chordProgression.join(', ')}]
     - Tempo: ${bpm} BPM
     - Total duration of this section: ${ticksPerPart} MIDI ticks
+    - Key/Scale: Primarily use notes from the ${scale} scale. This is a strong guideline.
 
     Melody Requirements:
     - User Description: "${userInput}"
-    - Scale: Primarily use notes from the ${scale} scale.
     - Rhythm Complexity: ${rhythmComplexity}.
     - Melodic Contour: ${melodicContour}.
 

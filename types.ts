@@ -30,6 +30,8 @@ export interface DrumNote {
 export interface SongPart {
   id: string;
   name: string; // e.g., 'Verse', 'Chorus'
+  bars: number;
   chords: Chord[];
   melody: MelodyNote[] | null;
+  key: string;
 }

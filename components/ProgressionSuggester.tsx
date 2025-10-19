@@ -44,24 +44,24 @@ export const ProgressionSuggester: React.FC<ProgressionSuggesterProps> = ({ onUs
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
             placeholder="e.g., Sad and cinematic"
-            className="flex-grow bg-gray-700 border border-gray-600 rounded-md p-2 text-white focus:ring-2 focus:ring-purple-500 focus:outline-none transition"
+            className="flex-grow bg-gray-800 border border-gray-700 rounded-md p-2 text-white focus:ring-2 focus:ring-red-500 focus:outline-none transition"
             />
             <button
                 onClick={handleSuggest}
                 disabled={isLoading}
-                className="bg-purple-600 hover:bg-purple-700 disabled:bg-purple-800 disabled:cursor-not-allowed text-white font-bold py-2 px-4 rounded-lg transition-transform transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-gray-800 focus:ring-purple-500"
+                className="bg-red-600 hover:bg-red-700 disabled:bg-red-800 disabled:cursor-not-allowed text-white font-bold py-2 px-4 rounded-lg transition-transform transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-gray-900 focus:ring-red-500"
             >
                 {isLoading ? <Spinner /> : 'Suggest'}
             </button>
         </div>
       </div>
 
-      {error && <p className="text-red-400 text-sm">{error}</p>}
+      {error && <p className="text-red-500 text-sm">{error}</p>}
 
       {suggestions.length > 0 && (
         <div className="space-y-3 pt-4">
           <h4 className="text-lg font-medium text-gray-300">Suggested Progression:</h4>
-          <div className="flex flex-wrap gap-2 p-3 bg-gray-900/50 rounded-lg border border-gray-700/50">
+          <div className="flex flex-wrap gap-2 p-3 bg-black/50 rounded-lg border border-gray-700/50">
             {suggestions.map((chord, index) => (
               <span key={index} className="bg-gray-700 text-white py-1.5 px-3 rounded-full text-sm font-medium">
                 {chord}
@@ -70,7 +70,7 @@ export const ProgressionSuggester: React.FC<ProgressionSuggesterProps> = ({ onUs
           </div>
           <button
             onClick={() => onUseProgression(suggestions)}
-            className="w-full bg-purple-600 hover:bg-purple-700 text-white font-bold py-2 px-4 rounded-lg transition-transform transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-gray-800 focus:ring-purple-500"
+            className="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded-lg transition-transform transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-gray-900 focus:ring-red-500"
           >
             Use This Progression
           </button>

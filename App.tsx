@@ -1,12 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { Logo } from './components/Logo';
 import { SongSketchpad } from './components/SongSketchpad';
-import { ChordMelodyLab } from './components/ChordMelodyLab';
+import { MidiChordGenerator } from './components/MidiChordGenerator';
 import { DAW } from './components/DAW';
 import { SongStructure, DAWProject, DAWTrack } from './types';
 import { TICKS_PER_QUARTER_NOTE } from './constants';
 
-type Tab = 'Lab' | 'Sketchpad' | 'DAW';
+type Tab = 'MIDI Generator' | 'Sketchpad' | 'DAW';
 
 const initialDurationTicks = 64 * 4 * TICKS_PER_QUARTER_NOTE; // 64 bars
 
@@ -81,8 +81,8 @@ const App: React.FC = () => {
 
     const renderContent = () => {
         switch (activeTab) {
-            case 'Lab':
-                return <ChordMelodyLab />;
+            case 'MIDI Generator':
+                return <MidiChordGenerator />;
             case 'Sketchpad':
                 return <SongSketchpad onExportToDAW={handleExport} />;
             case 'DAW':
@@ -122,7 +122,7 @@ const App: React.FC = () => {
                     <div className="flex gap-2">
                         <TabButton tabName="DAW" />
                         <TabButton tabName="Sketchpad" />
-                        <TabButton tabName="Lab" />
+                        <TabButton tabName="MIDI Generator" />
                     </div>
                 </div>
                 {renderContent()}

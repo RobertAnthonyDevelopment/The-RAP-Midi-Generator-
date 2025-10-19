@@ -1,148 +1,150 @@
-import React, { useState, useCallback, useMemo } from 'react';
+import React, { useState } from 'react';
+import { ChordSelector } from './ChordSelector';
 import { ProgressionSuggester } from './ProgressionSuggester';
 import { MelodyGenerator } from './MelodyGenerator';
-import { Chord, MelodyNote } from '../types';
-import { generateMultiTrackMidi } from '../utils/midiGenerator';
+import { Chord, MelodyNote, Note, ChordType } from '../types';
 import { parseChordString } from '../utils/chordParser';
-import { renderChordStem, renderMelodyStem } from '../utils/audioGenerator';
-import { CHORD_TYPES, NOTE_DURATIONS } from '../constants';
 import { getMidiNotesForChord } from '../utils/chordUtils';
+import { renderChordStem, renderMelodyStem, bufferToWav } from '../utils/audioGenerator';
 import { detectKey } from '../utils/keyDetector';
+import { TICKS_PER_QUARTER_NOTE } from '../constants';
 import { Spinner } from './Spinner';
 
 export const ChordMelodyLab: React.FC = () => {
-    const [labChords, setLabChords] = useState<Chord[]>([]);
-    const [labMelody, setLabMelody] = useState<MelodyNote[] | null>(null);
-    const [bpm, setBpm] = useState<number>(120);
+    const [chords, setChords] = useState<Chord[]>([]);
+    const [melody, setMelody] = useState<MelodyNote[] | null>(null);
+    const [bpm, setBpm] = useState(120);
+    const [numBars, setNumBars] = useState(4);
+    
+    // State for ChordSelector
+    const [rootNote, setRootNote] = useState<Note>('C');
+    const [chordType, setChordType] = useState<ChordType>('Major');
+    const [octave, setOctave] = useState(3);
+    
+    const [audioUrl, setAudioUrl] = useState<string | null>(null);
+    const [isLoading, setIsLoading] = useState(false);
 
-    const [renderingStem, setRenderingStem] = useState<string | null>(null);
-    const [stemUrls, setStemUrls] = useState<{ [key: string]: string }>({});
-    const [error, setError] = useState<string | null>(null);
-
-    const detectedKey = useMemo(() => detectKey(labChords), [labChords]);
-    const ticksPerChord = useMemo(() => NOTE_DURATIONS['Whole Note'], []);
-
+    const handleAddChord = () => {
+        setChords(prev => [...prev, { rootNote, chordType, octave }]);
+    };
+    
     const handleUseProgression = (progression: string[]) => {
-        const parsedChords = progression
-            .map(chordStr => {
-                const parsed = parseChordString(chordStr);
-                if (!parsed) return null;
-                const matchedTypeKey = Object.keys(CHORD_TYPES).find(key => key.toLowerCase() === parsed.type.toLowerCase()) as keyof typeof CHORD_TYPES | undefined;
-                if (!matchedTypeKey) return null;
-                return { rootNote: parsed.root, chordType: matchedTypeKey, octave: 4 };
-            })
-            .filter((c): c is Chord => c !== null);
-        setLabChords(parsedChords);
-        setLabMelody(null); // Reset melody when chords change
-        setStemUrls({}); // Reset audio
+        const newChords = progression.map(chordStr => {
+            const parsed = parseChordString(chordStr);
+            if (parsed) {
+                return { rootNote: parsed.root, chordType: parsed.type as ChordType, octave: 3 };
+            }
+            return null;
+        }).filter((c): c is Chord => c !== null);
+        setChords(newChords);
+        setMelody(null); // Clear melody when chords change
     };
-
-    const flatChordNotes = useMemo(() => {
-        let notes: MelodyNote[] = [];
-        let currentTick = 0;
-        labChords.forEach(chord => {
-            const midiNotes = getMidiNotesForChord(chord.rootNote, chord.chordType, chord.octave);
-            midiNotes.forEach(note => {
-                notes.push({ midiNote: note, startTick: currentTick, durationTicks: ticksPerChord });
-            });
-            currentTick += ticksPerChord;
-        });
-        return notes;
-    }, [labChords, ticksPerChord]);
-
-
-    const handleGenerateStem = useCallback(async (stemType: 'chords' | 'melody') => {
-        setRenderingStem(stemType);
-        setError(null);
-        setStemUrls(prev => ({ ...prev, [stemType]: undefined }));
-
+    
+    const handleMelodyGenerated = (newMelody: MelodyNote[]) => {
+        setMelody(newMelody);
+    };
+    
+    const handleGenerateStem = async (type: 'chords' | 'melody' | 'combined') => {
+        setIsLoading(true);
+        setAudioUrl(null);
         try {
-            let stemBlob: Blob | null = null;
-            if (stemType === 'chords' && flatChordNotes.length > 0) {
-                stemBlob = await renderChordStem(flatChordNotes, bpm);
-            } else if (stemType === 'melody' && labMelody && labMelody.length > 0) {
-                stemBlob = await renderMelodyStem(labMelody, bpm);
+            let audioBuffer: AudioBuffer | null = null;
+            const ticksPerPart = numBars * 4 * TICKS_PER_QUARTER_NOTE;
+            
+            if (type === 'chords' && chords.length > 0) {
+                 const ticksPerChord = ticksPerPart / chords.length;
+                 // FIX: Add velocity property to satisfy MelodyNote type
+                 const notes: MelodyNote[] = chords.flatMap((chord, i) => 
+                    getMidiNotesForChord(chord.rootNote, chord.chordType, chord.octave).map(midiNote => ({
+                        midiNote,
+                        startTick: i * ticksPerChord,
+                        durationTicks: ticksPerChord,
+                        velocity: 0.8,
+                    }))
+                );
+                audioBuffer = await renderChordStem(notes, bpm);
+            } else if (type === 'melody' && melody) {
+                 audioBuffer = await renderMelodyStem(melody, bpm);
+            }
+            
+            if (audioBuffer) {
+                const wavBlob = bufferToWav(audioBuffer);
+                const url = URL.createObjectURL(wavBlob);
+                setAudioUrl(url);
             }
 
-            if (stemBlob) {
-                setStemUrls(prev => ({ ...prev, [stemType]: URL.createObjectURL(stemBlob) }));
-            }
-        } catch (e) {
-            setError(e instanceof Error ? e.message : `Failed to render ${stemType} stem.`);
+        } catch(e) {
+            console.error("Failed to render audio", e);
         } finally {
-            setRenderingStem(null);
+            setIsLoading(false);
         }
-    }, [flatChordNotes, labMelody, bpm]);
-
-    const handleDownloadMidi = (stemType: 'chords' | 'melody') => {
-        let notes: MelodyNote[] = [];
-        let channel = 0;
-
-        if (stemType === 'chords') notes = flatChordNotes;
-        if (stemType === 'melody') { notes = labMelody || []; channel = 1; }
-
-        if (notes.length === 0) return;
-
-        const midiBlob = generateMultiTrackMidi({ bpm, tracks: [{ notes, channel }] });
-        const url = URL.createObjectURL(midiBlob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `lab_${stemType}.mid`;
-        a.click();
-        URL.revokeObjectURL(url);
     };
-
+    
+    const detectedKey = detectKey(chords);
 
     return (
-        <div className="space-y-8">
-            <Section title="1. Generate a Chord Progression">
-                <ProgressionSuggester onUseProgression={handleUseProgression} />
-            </Section>
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            {/* Left Column: Controls */}
+            <div className="lg:col-span-1 bg-gray-800/50 p-4 rounded-lg border border-gray-700/50 space-y-6">
+                <div>
+                    <label htmlFor="bpm-lab" className="text-sm font-medium text-gray-400">BPM</label>
+                    <input
+                        type="number"
+                        id="bpm-lab"
+                        value={bpm}
+                        onChange={e => setBpm(parseInt(e.target.value, 10))}
+                        className="w-full bg-gray-900/50 p-2 rounded text-lg font-bold text-center mt-1"
+                    />
+                </div>
+                 <ChordSelector
+                    rootNote={rootNote} setRootNote={setRootNote}
+                    chordType={chordType} setChordType={setChordType}
+                    octave={octave} setOctave={setOctave}
+                    onAddChord={handleAddChord}
+                 />
+                 <ProgressionSuggester onUseProgression={handleUseProgression} />
+                 <button onClick={() => { setChords([]); setMelody(null); }} className="w-full text-center text-gray-400 hover:text-white text-sm">Clear Progression</button>
+            </div>
+            
+            {/* Right Column: Results */}
+            <div className="lg:col-span-2 bg-gray-800/50 p-4 rounded-lg border border-gray-700/50 space-y-6">
+                <div>
+                    <h3 className="font-semibold text-lg mb-2">Chord Progression</h3>
+                    <div className="p-3 bg-black/30 rounded-md min-h-[60px] flex flex-wrap gap-2 items-center">
+                        {chords.map((c, i) => <span key={i} className="inline-block bg-gray-700 text-white py-1.5 px-3 rounded-full text-sm font-medium">{c.rootNote}{c.chordType}</span>)}
+                        {chords.length === 0 && <p className="text-gray-500">Add some chords or suggest a progression.</p>}
+                    </div>
+                </div>
+                
+                <div>
+                     <h3 className="font-semibold text-lg mb-2">Melody</h3>
+                     <div className="p-3 bg-black/30 rounded-md">
+                        <MelodyGenerator
+                            chords={chords}
+                            bpm={bpm}
+                            ticksPerPart={numBars * 4 * TICKS_PER_QUARTER_NOTE}
+                            onMelodyGenerated={handleMelodyGenerated}
+                            detectedKey={detectedKey}
+                        />
+                         {melody && <p className="text-sm text-green-400 mt-2">✓ Melody generated. Press 'Render Melody' to hear it.</p>}
+                     </div>
+                </div>
 
-            {labChords.length > 0 && (
-                <>
-                    <Section title="2. Generate a Melody">
-                        <div className="p-4 bg-black/50 rounded-lg border border-gray-700/50 space-y-3">
-                            <div className="flex justify-between items-center">
-                                <h4 className="font-bold text-lg text-red-400">Chord Progression</h4>
-                                <div className="text-sm text-gray-400 font-mono">Key: {detectedKey}</div>
-                            </div>
-                            <div className="flex flex-wrap gap-2">
-                                {labChords.map((c, i) => <span key={i} className="bg-gray-700 text-white py-1 px-3 rounded-full font-mono text-sm">{`${c.rootNote}${c.chordType.replace('Major', '').replace('Minor', 'm').trim()}`}</span>)}
-                            </div>
-                            <MelodyGenerator
-                                chords={labChords}
-                                bpm={bpm}
-                                ticksPerPart={labChords.length * ticksPerChord}
-                                onMelodyGenerated={setLabMelody}
-                                detectedKey={detectedKey}
-                            />
-                            {labMelody && <p className="text-green-400 text-sm">✓ Melody generated.</p>}
-                        </div>
-                    </Section>
-
-                    <Section title="3. Export Audio & MIDI">
-                        {error && <p className="text-red-500 text-sm mt-2">{error}</p>}
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-2">
-                            {['chords', 'melody'].map(stemType => (
-                                <div key={stemType} className="space-y-3 p-4 bg-black/50 rounded-lg">
-                                    <h3 className="font-semibold text-lg text-gray-200 capitalize">{stemType}</h3>
-                                    <button onClick={() => handleGenerateStem(stemType as any)} disabled={renderingStem !== null || (stemType === 'melody' && !labMelody)} className="w-full bg-yellow-600 hover:bg-yellow-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white font-bold py-2 px-3 rounded-lg transition flex items-center justify-center">{renderingStem === stemType ? <><Spinner /> Rendering...</> : 'Generate Audio'}</button>
-                                    {stemUrls[stemType] && (<div className="space-y-3 pt-2"><audio controls src={stemUrls[stemType]} className="w-full h-10"></audio><a href={stemUrls[stemType]} download={`lab_${stemType}.wav`} className="block w-full text-center bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-3 rounded-lg transition">Download .WAV</a></div>)}
-                                    <button onClick={() => handleDownloadMidi(stemType as any)} disabled={(stemType === 'melody' && !labMelody)} className="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-3 rounded-lg transition disabled:bg-gray-600 disabled:cursor-not-allowed">Download .MID</button>
-                                </div>
-                            ))}
-                        </div>
-                    </Section>
-                </>
-            )}
+                <div>
+                    <h3 className="font-semibold text-lg mb-2">Preview</h3>
+                    <div className="p-3 bg-black/30 rounded-md space-y-3">
+                         <div className="flex flex-wrap gap-2">
+                             <button onClick={() => handleGenerateStem('chords')} disabled={isLoading || chords.length === 0} className="flex-1 bg-red-600 hover:bg-red-700 disabled:bg-red-800 text-white font-bold py-2 px-4 rounded-lg transition">
+                                 {isLoading ? <Spinner/> : 'Render Chords'}
+                             </button>
+                             <button onClick={() => handleGenerateStem('melody')} disabled={isLoading || !melody} className="flex-1 bg-red-600 hover:bg-red-700 disabled:bg-red-800 text-white font-bold py-2 px-4 rounded-lg transition">
+                                  {isLoading ? <Spinner/> : 'Render Melody'}
+                             </button>
+                         </div>
+                         {audioUrl && <audio controls autoPlay src={audioUrl} className="w-full h-10 mt-2" />}
+                    </div>
+                </div>
+            </div>
         </div>
     );
 };
-
-const Section: React.FC<{title: string; children: React.ReactNode}> = ({title, children}) => (
-    <div className="p-6 bg-gray-900/70 rounded-xl border border-gray-700/50 space-y-4">
-        <h2 className="text-2xl font-semibold text-gray-300">{title}</h2>
-        {children}
-    </div>
-);

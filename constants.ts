@@ -1,3 +1,4 @@
+// FIX: Import type definitions from the refactored types.ts file to resolve circular dependencies.
 import { Note, ChordType, ChordFormula, NoteDuration } from './types';
 
 export const NOTES: Note[] = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];

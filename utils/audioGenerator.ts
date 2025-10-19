@@ -13,7 +13,7 @@ const ticksToSeconds = (ticks: number, bpm: number): number => {
     return ticks * secondsPerTick;
 };
 
-const bufferToWav = (buffer: AudioBuffer): Blob => {
+export const bufferToWav = (buffer: AudioBuffer): Blob => {
     const numOfChan = buffer.numberOfChannels;
     const length = buffer.length * numOfChan * 2 + 44;
     const bufferArray = new ArrayBuffer(length);
@@ -140,7 +140,7 @@ const createHiHat = (context: BaseAudioContext, startTime: number, duration = 0.
 
 // --- Stem Rendering Functions ---
 
-const renderNotesToStem = async (notes: MelodyNote[], bpm: number, nodeCreator: typeof createSynthNode): Promise<Blob> => {
+const renderNotesToStem = async (notes: MelodyNote[], bpm: number, nodeCreator: typeof createSynthNode): Promise<AudioBuffer> => {
      if (notes.length === 0) throw new Error("No notes to render.");
     const lastNote = notes.reduce((prev, current) => (prev.startTick + prev.durationTicks > current.startTick + current.durationTicks) ? prev : current);
     const totalDurationSeconds = ticksToSeconds(lastNote.startTick + lastNote.durationTicks, bpm) + 0.2;
@@ -155,7 +155,7 @@ const renderNotesToStem = async (notes: MelodyNote[], bpm: number, nodeCreator: 
     });
 
     const renderedBuffer = await context.startRendering();
-    return bufferToWav(renderedBuffer);
+    return renderedBuffer;
 }
 
 export const renderChordStem = (chords: MelodyNote[], bpm: number) => renderNotesToStem(chords, bpm, createSynthNode);
@@ -164,7 +164,7 @@ export const renderMelodyStem = (melody: MelodyNote[], bpm: number) => renderNot
 export const renderDrumStem = async (
     drumPattern: DrumNote[],
     bpm: number
-): Promise<Blob> => {
+): Promise<AudioBuffer> => {
     if (drumPattern.length === 0) throw new Error("Drum pattern is empty.");
 
     const lastHit = drumPattern.reduce((prev, current) => (prev.startTick > current.startTick) ? prev : current);
@@ -195,5 +195,5 @@ export const renderDrumStem = async (
     });
 
     const renderedBuffer = await context.startRendering();
-    return bufferToWav(renderedBuffer);
+    return renderedBuffer;
 };

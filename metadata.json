@@ -1,5 +1,7 @@
 {
-  "name": "MIDI Chord Generator",
-  "description": "An intelligent MIDI chord generator and progression suggester powered by the Gemini API. Create single chords or get creative ideas for entire progressions based on your desired mood or genre.",
-  "requestFramePermissions": []
+  "name": "Robert Anthony Productions AI Song Sketchpad",
+  "description": "Create full song sketches with AI. Generate song structures, chord progressions, melodies, and drum beats, all within a unified musical key. Powered by the Gemini API.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
 }
